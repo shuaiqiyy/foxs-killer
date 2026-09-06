@@ -1,7 +1,7 @@
 # foxs-killer
 银狐病毒查杀脚本
 
-##快捷命令
+## 快捷命令
 
 使用管理员身份打开powershell
 
