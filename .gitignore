@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# PyInstaller / Build
+dist/
+build/
+*.spec
+
+# Release binaries
+release/
+
+# Temporary
+*.csv.bak*
+hosts.bak*
