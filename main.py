@@ -117,9 +117,9 @@ def CImain():
                     print(f"\n正在删除: {pid} | {pol['name']}")
                     ok, out, err, rc = delete_policy(pid)
                     if ok:
-                        print(f"✅删除成功: {pid}")
+                        print(f"删除成功: {pid}")
                     else:
-                        print(f"❌删除失败 rc={rc}")
+                        print(f"删除失败 rc={rc}")
                         print(f"stdout:{out}")
                         print(f"stderr:{err}")
                 print("\n====全部删除操作执行完毕====")
@@ -155,10 +155,10 @@ def disable_risk_tasks(risk_list):
             errors="replace"
         )
         if ret.returncode == 0:
-            print(f"✅禁用成功: {tn}")
+            print(f"禁用成功: {tn}")
             ok_cnt += 1
         else:
-            print(f"❌禁用失败 rc={ret.returncode}: {ret.stderr.strip()}")
+            print(f"禁用失败 rc={ret.returncode}: {ret.stderr.strip()}")
             fail_cnt += 1
     print(f"\n====计划任务禁用完毕：成功 {ok_cnt} 条，失败 {fail_cnt} 条====")
 
