@@ -1,10 +1,10 @@
 import os
 import re
 import io
-import csv
-import subprocess
-import ctypes
 import sys
+import csv
+import ctypes
+import subprocess
 
 hosts_path = r'C:\Windows\System32\drivers\etc\hosts'
 whitelist = ['weishi.360.cn', 'www.360.cn', 'sd.360.cn']
@@ -36,7 +36,6 @@ def clean_hosts_whitelist(whitelist_domains):
 
             should_remove = False
             for domain in whitelist_domains:
-                # 使用正则精确匹配域名，避免误删
                 if re.search(rf'\b{re.escape(domain)}\b', line, re.IGNORECASE):
                     should_remove = True
                     removed.append(line.strip())
@@ -48,8 +47,6 @@ def clean_hosts_whitelist(whitelist_domains):
         if not removed:
             print("[hosts] 未发现银狐相关域名劫持规则")
             return False
-
-        # 备份原文件
         backup_path = hosts_path + '.bak'
         if not os.path.exists(backup_path):
             with open(backup_path, 'w', encoding='utf-8') as f:
@@ -191,24 +188,23 @@ def CImain():
         else:
             print("输入无效，请输入 Y 或者 N")
 
-def disable_risk_tasks(selected_tasks):
-    """禁用选中的计划任务"""
-    if not selected_tasks:
-        print("没有要禁用的任务。")
+def disable_all_tasks(tasks):
+    """禁用全部计划任务"""
+    if not tasks:
+        print("没有获取到计划任务。")
         return
 
-    print("\n开始禁用选中的计划任务……")
+    print("\n开始禁用全部计划任务……")
     ok_cnt = 0
     fail_cnt = 0
 
-    for task in selected_tasks:
+    for task in tasks:
         # 获取完整任务路径
         task_path = task.get("任务路径", "").strip()
         task_name = task.get("任务名称", "").strip()
         if not task_name:
             continue
 
-        # 构建完整路径
         if task_path and task_path != "\\":
             if not task_path.startswith("\\"):
                 task_path = "\\" + task_path
@@ -218,7 +214,7 @@ def disable_risk_tasks(selected_tasks):
         else:
             full_name = "\\" + task_name
 
-        full_name = re.sub(r'\\+', '\\', full_name)  # 清理多余反斜杠
+        full_name = re.sub(r'\\+', '\\', full_name)
         print(f"\n正在禁用: {full_name}")
 
         try:
@@ -241,26 +237,22 @@ def disable_risk_tasks(selected_tasks):
 
     print(f"\n====计划任务禁用完毕：成功 {ok_cnt} 条，失败 {fail_cnt} 条====")
 
-def dump_schtasks_to_csv(csv_output_path="计划任务全量导出.csv"):
-    """导出计划任务并识别风险项"""
+def dump_schtasks():
     print("\n正在获取计划任务列表...")
-
-    # 使用 /v /fo csv 获取详细列表
     cmd = ["schtasks", "/query", "/v", "/fo", "csv"]
     try:
         ret = subprocess.run(cmd, capture_output=True, encoding="gbk", errors="replace", timeout=30)
     except subprocess.TimeoutExpired:
         print("[错误] schtasks 命令超时")
-        return 0, [], ""
+        return 0
     except Exception as e:
         print(f"[错误] 执行 schtasks 失败: {e}")
-        return 0, [], ""
+        return 0
 
     if ret.returncode != 0:
         print(f"[错误] schtasks 执行失败: {ret.stderr}")
-        return 0, [], ""
+        return 0
 
-    # 解析CSV
     try:
         reader = csv.DictReader(io.StringIO(ret.stdout))
         # 获取实际列名，用于后续匹配
@@ -268,118 +260,23 @@ def dump_schtasks_to_csv(csv_output_path="计划任务全量导出.csv"):
         # 寻找关键字段的实际名称（兼容不同语言环境）
         name_key = next((f for f in fieldnames if f in ["任务名称", "TaskName"]), "任务名称")
         path_key = next((f for f in fieldnames if f in ["任务路径", "TaskPath"]), "任务路径")
-        trigger_key = next((f for f in fieldnames if f in ["任务触发器", "Trigger"]), "任务触发器")
-        script_key = next((f for f in fieldnames if f in ["程序脚本", "Task To Run"]), "程序脚本")
-        args_key = next((f for f in fieldnames if f in ["添加参数", "Arguments"]), "添加参数")
 
         tasks = []
         for row in reader:
             task = {
                 "任务名称": row.get(name_key, "").strip(),
                 "任务路径": row.get(path_key, "").strip(),
-                "任务触发器": row.get(trigger_key, "").strip(),
-                "程序脚本": row.get(script_key, "").strip(),
-                "添加参数": row.get(args_key, "").strip(),
-                # 原始行数据保留，方便查看
-                "原始数据": row
             }
-            tasks.append(task)
+            if task["任务名称"]:
+                tasks.append(task)
 
-        # 写入CSV文件（包含所有任务）
-        with open(csv_output_path, "w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows([t["原始数据"] for t in tasks])
-
-        # 识别风险任务
-        risk_list = []
-        for task in tasks:
-            prog = task.get("程序脚本", "").lower()
-            trigger = task.get("任务触发器", "")
-            is_risk = False
-            risk_tags = []
-
-            # 触发器风险
-            if "登录时" in trigger:
-                is_risk = True
-                risk_tags.append("登录触发")
-            if "系统启动时" in trigger:
-                is_risk = True
-                risk_tags.append("启动触发")
-            if re.search(r"延迟\s*(1|5|10)\s*分钟", trigger):
-                is_risk = True
-                risk_tags.append("短延迟触发")
-
-            # 路径风险
-            suspicious_paths = [
-                "appdata", "\\temp\\", "%temp%", "\\roaming\\",
-                "\\local\\temp", "\\downloads\\", "\\desktop\\",
-                "\\documents\\", "\\public\\", "\\tmp\\"
-            ]
-            for path in suspicious_paths:
-                if path in prog:
-                    is_risk = True
-                    risk_tags.append(f"可疑路径:{path}")
-                    break
-
-            # 脚本扩展名风险
-            suspicious_exts = ['.ps1', '.vbs', '.bat', '.cmd', '.js', '.jse', '.wsf', '.hta', '.exe']
-            for ext in suspicious_exts:
-                if prog.endswith(ext):
-                    # 排除常见系统程序
-                    if not any(safe in prog for safe in ["\\windows\\", "\\program files\\", "\\program files (x86)\\"]):
-                        is_risk = True
-                        risk_tags.append(f"脚本/可执行文件:{ext}")
-                    break
-
-            if is_risk:
-                task["风险标签"] = "|".join(risk_tags)
-                risk_list.append(task)
-
-        # 显示风险任务
-        if risk_list:
-            print("\n======[计划任务风险项]======")
-            for i, task in enumerate(risk_list, 1):
-                print(f"[{i}] {task.get('任务路径','')}{task.get('任务名称','')}")
-                print(f"    程序: {task.get('程序脚本','')} {task.get('添加参数','')}")
-                print(f"    触发器: {task.get('任务触发器','')}")
-                print(f"    风险标签: {task['风险标签']}\n")
-
-            # 用户选择要禁用的任务
-            print("请选择要禁用的任务（输入序号，用逗号或短横线分隔，或输入 'all' 全部禁用，'none' 跳过）：")
-            choice = input("> ").strip().lower()
-            if choice == 'none':
-                print("已跳过计划任务禁用。")
-            elif choice == 'all':
-                disable_risk_tasks(risk_list)
-            else:
-                # 解析用户输入
-                selected_indices = set()
-                parts = choice.split(',')
-                for part in parts:
-                    part = part.strip()
-                    if '-' in part:
-                        try:
-                            start, end = map(int, part.split('-'))
-                            selected_indices.update(range(start, end + 1))
-                        except:
-                            print(f"忽略无效的范围: {part}")
-                    elif part.isdigit():
-                        selected_indices.add(int(part))
-                # 筛选有效索引
-                selected_tasks = [risk_list[i-1] for i in sorted(selected_indices) if 1 <= i <= len(risk_list)]
-                if selected_tasks:
-                    disable_risk_tasks(selected_tasks)
-                else:
-                    print("未选择任何有效任务。")
-        else:
-            print("\n[计划任务] 未检测到风险项")
-
-        return len(tasks), risk_list, os.path.abspath(csv_output_path)
+        print(f"\n共获取到 {len(tasks)} 条计划任务")
+        disable_all_tasks(tasks)
+        return len(tasks)
 
     except Exception as e:
         print(f"[错误] 解析计划任务数据时出错: {e}")
-        return 0, [], ""
+        return 0
 
 if __name__ == "__main__":
     print("=" * 50)
@@ -394,10 +291,8 @@ if __name__ == "__main__":
         print("[警告] 请右键以管理员身份运行本脚本。\n")
 
     # 执行顺序：1.计划任务 2.CI策略 3.hosts
-    print("\n[1/3] 检查计划任务...")
-    total, risks, csvfile = dump_schtasks_to_csv()
-    if csvfile:
-        print(f"\n计划任务全量导出已保存至：{csvfile}，共 {total} 条任务")
+    print("\n[1/3] 禁用全部计划任务...")
+    total = dump_schtasks()
 
     print("\n[2/3] 检查CI策略...")
     CImain()
