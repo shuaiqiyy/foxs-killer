@@ -6,7 +6,7 @@
 使用管理员身份打开powershell
 
 ```powershell
-$wc=New-Object System.Net.WebClient;$wc.DownloadFile("https://github.com/shuaiqiyy/foxs-killer/releases/download/v1.3/foxs-killer-v1.2-x64.exe","$env:TEMP\foxs-killer-v1.3-x64.exe");Start-Process "$env:TEMP\foxs-killer-v1.3-x64.exe" -Verb RunAs
+$wc=New-Object System.Net.WebClient;$wc.DownloadFile("https://github.com/shuaiqiyy/foxs-killer/releases/download/v1.3/foxs-killer-v1.3-x64.exe","$env:TEMP\foxs-killer-v1.3-x64.exe");Start-Process "$env:TEMP\foxs-killer-v1.3-x64.exe" -Verb RunAs
 ```
 
 
