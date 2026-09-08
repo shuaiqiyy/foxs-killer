@@ -1,14 +1,14 @@
 import os
 import re
-import io
-import sys
-import csv
 import ctypes
 import subprocess
 
+
+# ========== 配置 ==========
 hosts_path = r'C:\Windows\System32\drivers\etc\hosts'
 whitelist = ['weishi.360.cn', 'www.360.cn', 'sd.360.cn']
 
+# ========== 辅助函数 ==========
 def is_admin():
     """检查是否具有管理员权限"""
     try:
@@ -16,56 +16,110 @@ def is_admin():
     except:
         return False
 
-def clean_hosts_whitelist(whitelist_domains):
-    """清理hosts文件中的白名单域名"""
-    if not os.path.exists(hosts_path):
-        print(f"Hosts文件不存在: {hosts_path}")
-        return False
+def disable_and_stop_all_tasks():
+    ps_script = """
+    $tasks = Get-ScheduledTask
+    $disable_ok = 0
+    $disable_fail = 0
+    $stop_ok = 0
+    $stop_fail = 0
+    $total = $tasks.Count
+    $current = 0
+
+    foreach ($t in $tasks) {
+        $current++
+        $fullName = $t.TaskPath + $t.TaskName
+        Write-Progress -Activity "处理计划任务" -Status "正在处理: $fullName" -PercentComplete (($current / $total) * 100)
+
+        # 1. 禁用任务
+        try {
+            Disable-ScheduledTask -InputObject $t -ErrorAction Stop | Out-Null
+            $disable_ok++
+        } catch {
+            $disable_fail++
+        }
+
+        # 2. 尝试停止任务（双重机制）
+        $stopped = $false
+        try {
+            Stop-ScheduledTask -InputObject $t -ErrorAction Stop | Out-Null
+            $stop_ok++
+            $stopped = $true
+        } catch {
+            # 备选方案：schtasks /end
+            try {
+                $taskPath = $t.TaskPath.TrimEnd('\')
+                $taskName = $t.TaskName
+                if ($taskPath -and $taskPath -ne "\") {
+                    $fullTaskName = $taskPath + "\" + $taskName
+                } else {
+                    $fullTaskName = "\" + $taskName
+                }
+                & schtasks /end /tn $fullTaskName 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    $stop_ok++
+                    $stopped = $true
+                } else {
+                    $stop_fail++
+                }
+            } catch {
+                $stop_fail++
+            }
+        }
+        # 每处理50个任务或最后一个任务时输出一行摘要
+        if (($current % 50 -eq 0) -or ($current -eq $total)) {
+            Write-Host "[进度] $current / $total  禁用成功:$disable_ok  停止成功:$stop_ok"
+        }
+    }
+
+    Write-Host "STATS: $disable_ok $disable_fail $stop_ok $stop_fail"
+    """
 
     try:
-        with open(hosts_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300  # 给足时间处理大量任务
+        )
+        if result.returncode != 0:
+            print("[错误] PowerShell 执行失败:", result.stderr)
+            return 0, 0, 0, 0
 
-        new_lines = []
-        removed = []
+        output = result.stdout
+        lines = output.splitlines()
 
-        for line in lines:
-            if not line.strip() or line.strip().startswith('#'):
-                new_lines.append(line)
-                continue
+        # 查找 STATS 行
+        stats_line = None
+        for line in reversed(lines):
+            if line.startswith("STATS:"):
+                stats_line = line
+                break
 
-            should_remove = False
-            for domain in whitelist_domains:
-                if re.search(rf'\b{re.escape(domain)}\b', line, re.IGNORECASE):
-                    should_remove = True
-                    removed.append(line.strip())
-                    break
+        if stats_line:
+            parts = stats_line.split()
+            if len(parts) >= 5:
+                return int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
 
-            if not should_remove:
-                new_lines.append(line)
+        # 降级方案：从最后一行提取数字
+        if lines:
+            last_line = lines[-1]
+            numbers = re.findall(r'\d+', last_line)
+            if len(numbers) >= 4:
+                return map(int, numbers[:4])
 
-        if not removed:
-            print("[hosts] 未发现银狐相关域名劫持规则")
-            return False
-        backup_path = hosts_path + '.bak'
-        if not os.path.exists(backup_path):
-            with open(backup_path, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
-            print(f"[hosts] 已备份原文件到: {backup_path}")
+        print("[警告] 未能解析统计信息，原始输出末尾：", lines[-3:] if lines else "")
+        return 0, 0, 0, 0
 
-        with open(hosts_path, 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
-
-        print(f"[hosts] 已删除 {len(removed)} 条劫持规则")
-        return True
-
-    except PermissionError:
-        print("[hosts] 权限不足，请以管理员身份运行本脚本！")
-        return False
+    except subprocess.TimeoutExpired:
+        print("[错误] 命令执行超时")
+        return 0, 0, 0, 0
     except Exception as e:
-        print(f"[hosts] 处理失败: {e}")
-        return False
+        print(f"[错误] 执行异常: {e}")
+        return 0, 0, 0, 0
 
+# ========== 2. CI策略处理  ==========
 def delete_policy(policy_guid: str):
     """删除指定的CI策略"""
     try:
@@ -188,115 +242,80 @@ def CImain():
         else:
             print("输入无效，请输入 Y 或者 N")
 
-def disable_all_tasks(tasks):
-    """禁用全部计划任务"""
-    if not tasks:
-        print("没有获取到计划任务。")
-        return
-
-    print("\n开始禁用全部计划任务……")
-    ok_cnt = 0
-    fail_cnt = 0
-
-    for task in tasks:
-        # 获取完整任务路径
-        task_path = task.get("任务路径", "").strip()
-        task_name = task.get("任务名称", "").strip()
-        if not task_name:
-            continue
-
-        if task_path and task_path != "\\":
-            if not task_path.startswith("\\"):
-                task_path = "\\" + task_path
-            if not task_path.endswith("\\"):
-                task_path += "\\"
-            full_name = task_path + task_name
-        else:
-            full_name = "\\" + task_name
-
-        full_name = re.sub(r'\\+', '\\', full_name)
-        print(f"\n正在禁用: {full_name}")
-
-        try:
-            ret = subprocess.run(
-                ["schtasks", "/change", "/tn", full_name, "/disable"],
-                capture_output=True, encoding="gbk", errors="replace", timeout=10
-            )
-            if ret.returncode == 0:
-                print(f"禁用成功: {full_name}")
-                ok_cnt += 1
-            else:
-                print(f"禁用失败 rc={ret.returncode}: {ret.stderr.strip()}")
-                fail_cnt += 1
-        except subprocess.TimeoutExpired:
-            print(f"禁用超时: {full_name}")
-            fail_cnt += 1
-        except Exception as e:
-            print(f"禁用异常: {full_name} - {e}")
-            fail_cnt += 1
-
-    print(f"\n====计划任务禁用完毕：成功 {ok_cnt} 条，失败 {fail_cnt} 条====")
-
-def dump_schtasks():
-    print("\n正在获取计划任务列表...")
-    cmd = ["schtasks", "/query", "/v", "/fo", "csv"]
-    try:
-        ret = subprocess.run(cmd, capture_output=True, encoding="gbk", errors="replace", timeout=30)
-    except subprocess.TimeoutExpired:
-        print("[错误] schtasks 命令超时")
-        return 0
-    except Exception as e:
-        print(f"[错误] 执行 schtasks 失败: {e}")
-        return 0
-
-    if ret.returncode != 0:
-        print(f"[错误] schtasks 执行失败: {ret.stderr}")
-        return 0
+# ========== 3. Hosts修复（保持不变） ==========
+def clean_hosts_whitelist(whitelist_domains):
+    """清理hosts文件中的白名单域名"""
+    if not os.path.exists(hosts_path):
+        print(f"Hosts文件不存在: {hosts_path}")
+        return False
 
     try:
-        reader = csv.DictReader(io.StringIO(ret.stdout))
-        # 获取实际列名，用于后续匹配
-        fieldnames = reader.fieldnames if reader.fieldnames else []
-        # 寻找关键字段的实际名称（兼容不同语言环境）
-        name_key = next((f for f in fieldnames if f in ["任务名称", "TaskName"]), "任务名称")
-        path_key = next((f for f in fieldnames if f in ["任务路径", "TaskPath"]), "任务路径")
+        with open(hosts_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
 
-        tasks = []
-        for row in reader:
-            task = {
-                "任务名称": row.get(name_key, "").strip(),
-                "任务路径": row.get(path_key, "").strip(),
-            }
-            if task["任务名称"]:
-                tasks.append(task)
+        new_lines = []
+        removed = []
 
-        print(f"\n共获取到 {len(tasks)} 条计划任务")
-        disable_all_tasks(tasks)
-        return len(tasks)
+        for line in lines:
+            if not line.strip() or line.strip().startswith('#'):
+                new_lines.append(line)
+                continue
 
+            should_remove = False
+            for domain in whitelist_domains:
+                if re.search(rf'\b{re.escape(domain)}\b', line, re.IGNORECASE):
+                    should_remove = True
+                    removed.append(line.strip())
+                    break
+
+            if not should_remove:
+                new_lines.append(line)
+
+        if not removed:
+            print("[hosts] 未发现银狐相关域名劫持规则")
+            return False
+
+        backup_path = hosts_path + '.bak'
+        if not os.path.exists(backup_path):
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            print(f"[hosts] 已备份原文件到: {backup_path}")
+
+        with open(hosts_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+
+        print(f"[hosts] 已删除 {len(removed)} 条劫持规则")
+        return True
+
+    except PermissionError:
+        print("[hosts] 权限不足，请以管理员身份运行本脚本！")
+        return False
     except Exception as e:
-        print(f"[错误] 解析计划任务数据时出错: {e}")
-        return 0
+        print(f"[hosts] 处理失败: {e}")
+        return False
 
+# ========== 主程序 ==========
 if __name__ == "__main__":
     print("=" * 50)
     print("银狐专杀工具")
     print("Maker: shuaiqiyy")
     print("=" * 50)
 
-    # 管理员权限检查
     if not is_admin():
         print("[警告] 未检测到管理员权限！")
         print("[警告] 计划任务禁用、CI策略删除和hosts修改可能需要管理员权限。")
         print("[警告] 请右键以管理员身份运行本脚本。\n")
 
-    # 执行顺序：1.计划任务 2.CI策略 3.hosts
-    print("\n[1/3] 禁用全部计划任务...")
-    total = dump_schtasks()
+    # 1. 计划任务
+    print("\n[1/3] 禁用并强制停止所有计划任务...")
+    dis_ok, dis_fail, stop_ok, stop_fail = disable_and_stop_all_tasks()
+    print(f"[计划任务] 禁用成功: {dis_ok}，禁用失败: {dis_fail}；停止成功: {stop_ok}，停止失败: {stop_fail}")
 
+    # 2. CI策略
     print("\n[2/3] 检查CI策略...")
     CImain()
 
+    # 3. Hosts修复
     print("\n[3/3] 修复hosts文件...")
     clean_hosts_whitelist(whitelist)
 
